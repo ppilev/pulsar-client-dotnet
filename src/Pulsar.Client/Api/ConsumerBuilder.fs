@@ -88,7 +88,7 @@ type ConsumerBuilder<'T> private (createConsumerAsync, createProducerAsync, conf
 
     internal new(createConsumerAsync, сreateProducerAsync, schema) = ConsumerBuilder(createConsumerAsync, сreateProducerAsync, ConsumerConfiguration.Default, ConsumerInterceptors.Empty, schema)
 
-    member private this.With(newConfig: ConsumerConfiguration<'T>) =
+    member public this.With(newConfig: ConsumerConfiguration<'T>) =
         ConsumerBuilder(createConsumerAsync, createProducerAsync, newConfig, consumerInterceptors, schema)
 
     member private this.With(newInterceptors: ConsumerInterceptors<'T>) =

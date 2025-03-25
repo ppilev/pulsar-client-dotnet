@@ -4,11 +4,11 @@ open System
 open System.Net
 open System.Threading
 
-type internal EndPointResolver(addresses : Uri list) =
+type internal EndPointResolver(addresses : Uri array) =
     let mutable currentIndex = -1
     
     do
-        if List.isEmpty addresses then
+        if Array.isEmpty addresses then
             invalidArg "addresses" "Addresses list could not be empty."
             
     member this.Resolve() =

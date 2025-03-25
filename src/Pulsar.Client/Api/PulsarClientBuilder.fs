@@ -18,14 +18,14 @@ type PulsarClientBuilder private (config: PulsarClientConfiguration) =
         |> checkValue
             (fun c ->
                 c.ServiceAddresses
-                |> invalidArgIf (fun addresses -> addresses |> List.isEmpty) "Service Url needs to be specified on the PulsarClientBuilder object.")
+                |> invalidArgIf (fun addresses -> addresses |> Array.isEmpty) "Service Url needs to be specified on the PulsarClientBuilder object.")
 
     new() = PulsarClientBuilder(PulsarClientConfiguration.Default)
 
     member this.ServiceUrl (url: string) =
         match url |> ServiceUri.parse with
         | (Result.Ok serviceUri) ->
-            PulsarClientBuilder { config with ServiceAddresses = serviceUri.Addresses; UseTls = serviceUri.UseTls }
+            PulsarClientBuilder { config with ServiceAddresses = List.toArray(serviceUri.Addresses); UseTls = serviceUri.UseTls }
         | (Result.Error message) -> invalidArg null message
 
     member this.OperationTimeout operationTimeout =
@@ -107,6 +107,8 @@ type PulsarClientBuilder private (config: PulsarClientConfiguration) =
             return client
         }
 
+    member public this.With(newConfig: PulsarClientConfiguration) =
+        PulsarClientBuilder(newConfig)
 
     member this.Configuration =
         config
