@@ -27,7 +27,7 @@ type ProducerBuilder<'T> private (сreateProducerAsync, config: ProducerConfigur
 
     internal new(сreateProducerAsync, schema: ISchema<'T>) = ProducerBuilder(сreateProducerAsync, ProducerConfiguration.Default, ProducerInterceptors.Empty, schema)
 
-    member private this.With(newConfig: ProducerConfiguration) =
+    member public this.With(newConfig: ProducerConfiguration) =
         ProducerBuilder<'T>(сreateProducerAsync, newConfig, producerInterceptors, schema)
 
     member private this.With(newInterceptors: ProducerInterceptors<'T>) =

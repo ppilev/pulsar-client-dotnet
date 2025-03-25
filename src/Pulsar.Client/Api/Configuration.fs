@@ -7,9 +7,10 @@ open System
 open System.Security.Authentication
 open System.Security.Cryptography.X509Certificates
 
+[<CLIMutable>]
 type PulsarClientConfiguration =
     {
-        ServiceAddresses: Uri list
+        ServiceAddresses: Uri array
         OperationTimeout: TimeSpan
         StatsInterval: TimeSpan
         MaxNumberOfRejectedRequestPerConnection: int
@@ -29,7 +30,7 @@ type PulsarClientConfiguration =
     }
     static member Default =
         {
-            ServiceAddresses = List.empty<Uri>
+            ServiceAddresses = Array.empty<Uri>
             OperationTimeout = TimeSpan.FromMilliseconds(30000.0)
             StatsInterval = TimeSpan.Zero
             MaxNumberOfRejectedRequestPerConnection = 50
@@ -48,6 +49,7 @@ type PulsarClientConfiguration =
             KeepAliveInterval = TimeSpan.FromSeconds(30.0)
         }
 
+[<CLIMutable>]
 type ConsumerConfiguration<'T> =
     {
         Topics: TopicName seq
@@ -118,6 +120,7 @@ type ConsumerConfiguration<'T> =
             ReplicateSubscriptionState = false 
         }
 
+[<CLIMutable>]
 type ProducerConfiguration =
     {
         Topic: TopicName
@@ -144,8 +147,10 @@ type ProducerConfiguration =
         ProducerCryptoFailureAction: ProducerCryptoFailureAction
         InitialSubscriptionName: SubscriptionName
     }
+
     member this.BatchingPartitionSwitchFrequencyIntervalMs =
         this.BatchingPartitionSwitchFrequencyByPublishDelay * (int this.BatchingMaxPublishDelay.TotalMilliseconds)
+
     static member Default =
         {
             Topic = Unchecked.defaultof<TopicName>
@@ -173,6 +178,7 @@ type ProducerConfiguration =
             InitialSubscriptionName = %"" 
         }
 
+[<CLIMutable>]
 type ReaderConfiguration =
     {
         Topic: TopicName
@@ -206,6 +212,7 @@ type ReaderConfiguration =
             AutoUpdatePartitionsInterval = TimeSpan.FromSeconds(60.0)
         }
 
+[<CLIMutable>]
 type TransactionConfiguration =
     {
         TxnTimeout: TimeSpan
@@ -215,6 +222,7 @@ type TransactionConfiguration =
             TxnTimeout = TimeSpan.FromMinutes(1.0)
         }
 
+[<CLIMutable>]
 type TableViewConfiguration =
     {
         Topic: TopicName

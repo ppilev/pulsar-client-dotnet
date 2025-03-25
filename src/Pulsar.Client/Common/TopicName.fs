@@ -27,7 +27,7 @@ module internal TopicNameHelpers =
 
 open TopicNameHelpers
 
-type TopicName private (completeTopicName: string, partition: int) =
+type TopicName private (completeTopicName: string, partition: int, topic: string) =
 
     let isPersistent = completeTopicName.StartsWith("persistent")
     let isPartitioned = partition > -1
@@ -51,11 +51,13 @@ type TopicName private (completeTopicName: string, partition: int) =
                             sprintf "%s://%s/%s/%s" DefaultDomain DefaultTenant DefaultNamespace topic
                         else
                             failwith "Invalid short topic name '" + topic + "', it should be in the format of <tenant>/<namespace>/<topic> or <topic>"
-        TopicName(completeTopicName, GetPartitionIndex(completeTopicName))
+        TopicName(completeTopicName, GetPartitionIndex(completeTopicName), topic)
         
     internal new (domain: string, namespaceName: NamespaceName, topic: string) =
         let name = domain + "://" + namespaceName.ToString() + "/" + topic
         TopicName(name)
+
+    member this.Topic: string = topic
 
     member this.CompleteTopicName: CompleteTopicName = %completeTopicName
 
@@ -75,7 +77,7 @@ type TopicName private (completeTopicName: string, partition: int) =
             this
         else
             let partitionedTopicName = completeTopicName + PartitionTopicSuffix + index.ToString()
-            TopicName(partitionedTopicName, index)
+            TopicName(partitionedTopicName, index, completeTopicName)
             
     static member TRANSACTION_COORDINATOR_ASSIGN =
         TopicName("persistent", NamespaceName.SYSTEM_NAMESPACE, "transaction_coordinator_assign")

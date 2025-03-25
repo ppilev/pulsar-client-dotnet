@@ -26,7 +26,7 @@ type ReaderBuilder<'T> private (createReaderAsync, config: ReaderConfiguration, 
 
     internal new(createReaderAsync, schema) = ReaderBuilder(createReaderAsync, ReaderConfiguration.Default, schema)
     
-    member private this.With(newConfig) =
+    member public this.With(newConfig) =
         ReaderBuilder(createReaderAsync, newConfig, schema)
 
     member this.Topic topic =        

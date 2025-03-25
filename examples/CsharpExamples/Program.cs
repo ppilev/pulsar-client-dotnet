@@ -17,7 +17,8 @@ namespace CsharpExamples
                );
             PulsarClient.Logger = loggerFactory.CreateLogger("PulsarLogger");
 
-             await Simple.RunSimple();
+            await OptionsPattern.RunConfiguration();
+            //await Simple.RunSimple();
             // await TlsAuthentication.RunTlsAuthentication();
             // await CustomProps.RunCustomProps();
             // await ReaderApi.RunReader();
