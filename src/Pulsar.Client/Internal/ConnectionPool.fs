@@ -134,7 +134,11 @@ type internal ConnectionPool (config: PulsarClientConfiguration) =
                                   broker, maxMessageSize)
         backgroundTask {
             let (PhysicalAddress physicalAddress) = broker.PhysicalAddress
-            let pipeOptions = PipeOptions(pauseWriterThreshold = int64 maxMessageSize )
+            // We should use PipeOptions.Default.PauseWriterThreshold as the minimum value for pauseWriterThreshold. A value that's too small isn't practical and will affect performance.
+            let pauseWriterThreshold = max (int64 maxMessageSize) PipeOptions.Default.PauseWriterThreshold
+            // Make sure the resumeWriterThreshold is half of the pauseWriterThreshold for better performance: https://github.com/dotnet/runtime/blob/970070e3b78b8cf604dabfe114e1f609c38c555d/src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeOptions.cs#L50-L51
+            let resumeWriterThreshold = int64 (pauseWriterThreshold / 2L)
+            let pipeOptions = PipeOptions(pauseWriterThreshold = pauseWriterThreshold, resumeWriterThreshold = resumeWriterThreshold )
             let! socket = getSocket physicalAddress
 
             try
@@ -143,7 +147,18 @@ type internal ConnectionPool (config: PulsarClientConfiguration) =
                         if config.UseTls then
                             Log.Logger.LogDebug("Configuring ssl for {0}", physicalAddress)
                             let sslStream = new SslStream(new NetworkStream(socket), false, RemoteCertificateValidationCallback(remoteCertificateValidationCallback))
-                            let clientCertificates = config.Authentication.GetAuthData(physicalAddress.Host).GetTlsCertificates()
+                            let authData = config.Authentication.GetAuthData(physicalAddress.Host)
+                            let clientCertificates =
+                                if authData.HasDataForTls() then
+                                    config.Authentication.GetAuthData(physicalAddress.Host).GetTlsCertificates()
+                                else
+                                    let clientCert = config.TlsCertificate
+                                    if clientCert = null then
+                                        X509Certificate2Collection()
+                                    elif not clientCert.HasPrivateKey then
+                                        failwith "TlsCertificate doesn't contain a private key"
+                                    else
+                                        X509Certificate2Collection([| clientCert |])
                             do! sslStream.AuthenticateAsClientAsync(physicalAddress.Host, clientCertificates, config.TlsProtocols, false)
 
                             let pipeConnection = StreamConnection.GetDuplex(sslStream, pipeOptions)

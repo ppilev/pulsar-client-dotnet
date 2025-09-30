@@ -213,6 +213,7 @@ type internal Metadata =
         EncryptionAlgo: string
         OrderingKey: byte[]
         ReplicatedFrom: string
+        ProducerName: string
         NullValue: bool
     }
 
@@ -243,9 +244,11 @@ type EncryptionContext =
         CompressionType: CompressionType
         UncompressedMessageSize: int
         BatchSize: Nullable<int>
+        // Indicates whether the message payload remains encrypted (true) or has been successfully decrypted (false)
+        IsEncrypted: bool
     }
     with
-        static member internal FromMetadata(metadata: Metadata) =
+        static member internal FromMetadata(metadata: Metadata, isEncrypted: bool) =
             if metadata.EncryptionKeys.Length > 0 then
                 {
                     Keys = metadata.EncryptionKeys
@@ -254,6 +257,7 @@ type EncryptionContext =
                     CompressionType = metadata.CompressionType
                     UncompressedMessageSize = metadata.UncompressedMessageSize
                     BatchSize = if metadata.HasNumMessagesInBatch then Nullable(metadata.NumMessages) else Nullable()
+                    IsEncrypted = isEncrypted
                 } |> Some
             else
                 None
@@ -262,7 +266,7 @@ type Message<'T> internal (messageId: MessageId, data: byte[], key: PartitionKey
                   properties: IReadOnlyDictionary<string, string>, encryptionCtx: EncryptionContext option,
                   schemaVersion: byte[], sequenceId: SequenceId, orderingKey: byte[], publishTime: TimeStamp,
                   eventTime: Nullable<TimeStamp>,
-                  redeliveryCount: int32, replicatedFrom: string,
+                  redeliveryCount: int32, replicatedFrom: string, producerName: string,
                   getValue: unit -> 'T) =
     /// Get the unique message ID associated with this message.
     member this.MessageId = messageId
@@ -291,6 +295,8 @@ type Message<'T> internal (messageId: MessageId, data: byte[], key: PartitionKey
     member this.RedeliveryCount = redeliveryCount
     /// Get name of cluster, from which the message is replicated.
     member this.ReplicatedFrom = replicatedFrom
+    /// Get name of producer of the message
+    member this.ProducerName = producerName
 
     /// Get the de-serialized value of the message, according the configured Schema.
     member this.GetValue() =
@@ -298,19 +304,19 @@ type Message<'T> internal (messageId: MessageId, data: byte[], key: PartitionKey
 
     member internal this.WithMessageId messageId =
         Message(messageId, data, key, hasBase64EncodedKey, properties, encryptionCtx, schemaVersion, sequenceId,
-                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, getValue)
+                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, producerName, getValue)
     /// Get a new instance of the message with updated data
     member this.WithData data =
         Message(messageId, data, key, hasBase64EncodedKey, properties, encryptionCtx, schemaVersion, sequenceId,
-                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, getValue)
+                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, producerName, getValue)
     /// Get a new instance of the message with updated key
     member this.WithKey (key, hasBase64EncodedKey) =
         Message(messageId, data, key, hasBase64EncodedKey, properties, encryptionCtx, schemaVersion, sequenceId,
-                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, getValue)
+                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, producerName, getValue)
     /// Get a new instance of the message with updated properties
     member this.WithProperties properties =
         Message(messageId, data, key, hasBase64EncodedKey, properties, encryptionCtx, schemaVersion, sequenceId,
-                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, getValue)
+                orderingKey, publishTime, eventTime, redeliveryCount, replicatedFrom, producerName, getValue)
 
 type Messages<'T> internal(maxNumberOfMessages: int, maxSizeOfMessages: int64) =
 

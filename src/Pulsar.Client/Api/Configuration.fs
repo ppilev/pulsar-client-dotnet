@@ -19,6 +19,7 @@ type PulsarClientConfiguration =
         TlsHostnameVerificationEnable: bool
         TlsAllowInsecureConnection: bool
         TlsTrustCertificate: X509Certificate2
+        TlsCertificate: X509Certificate2
         Authentication: Authentication
         TlsProtocols: SslProtocols
         ListenerName: string
@@ -39,6 +40,7 @@ type PulsarClientConfiguration =
             TlsHostnameVerificationEnable = false
             TlsAllowInsecureConnection = false
             TlsTrustCertificate = null
+            TlsCertificate = null
             Authentication = Authentication.AuthenticationDisabled
             TlsProtocols = SslProtocols.None
             ListenerName = ""

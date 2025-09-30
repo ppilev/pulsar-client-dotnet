@@ -452,7 +452,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
         ackRequests.Clear()
 
     let getNewIndividualMsgIdWithPartition messageId =
-        { messageId with Type = MessageIdType.Single; Partition = partitionIndex; TopicName = %"" }
+        { messageId with Type = MessageIdType.Single; Partition = partitionIndex; TopicName = topicName.CompleteTopicName }
 
     let processPossibleToDLQ (messageId : MessageId) =
         let acknowledge = trySendAcknowledge Individual EmptyProperties None
@@ -563,7 +563,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
             let batchWaitingChannel = batchWaiters |> dequeueBatchWaiter
             batchWaitingChannel.TrySetException ex |> ignore
 
-    let stopConsumer () =
+    let closeConsumerTasks() =
         unAckedMessageTracker.Close()
         acksGroupingTracker.Close()
         clearDeadLetters()
@@ -574,6 +574,9 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
         statTimer.Stop()
         chunkTimer.Stop()
         cleanup(this)
+
+    let stopConsumer () =
+        closeConsumerTasks()
         failWaiters <| AlreadyClosedException "Consumer is already closed"
         Log.Logger.LogInformation("{0} stopped", prefix)
 
@@ -661,7 +664,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                 trackMessage rawMessage.MessageId
             None
 
-    let handleSingleMessagePayload (rawMessage: RawMessage) msgId payload hasWaitingChannel hasWaitingBatchChannel schemaDecodeFunction =
+    let handleSingleMessagePayload (rawMessage: RawMessage) msgId payload hasWaitingChannel hasWaitingBatchChannel isMessageUndecryptable schemaDecodeFunction =
         if duringSeek.IsSome || (isSameEntry(rawMessage.MessageId) && isPriorEntryIndex(rawMessage.MessageId.EntryId)) then
             // We need to discard entries that were prior to startMessageId
             Log.Logger.LogInformation("{0} Ignoring message from before the startMessageId: {1}", prefix, startMessageId)
@@ -680,7 +683,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                             %msgKey,
                             rawMessage.IsKeyBase64Encoded,
                             rawMessage.Properties,
-                            EncryptionContext.FromMetadata rawMessage.Metadata,
+                            EncryptionContext.FromMetadata(rawMessage.Metadata, isEncrypted = isMessageUndecryptable),
                             getSchemaVersionBytes rawMessage.Metadata.SchemaVersion,
                             rawMessage.Metadata.SequenceId,
                             rawMessage.Metadata.OrderingKey,
@@ -688,6 +691,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                             rawMessage.Metadata.EventTime,
                             rawMessage.RedeliveryCount,
                             rawMessage.Metadata.ReplicatedFrom,
+                            rawMessage.Metadata.ProducerName,
                             getValue
                         )
             if (rawMessage.RedeliveryCount >= deadLettersProcessor.MaxRedeliveryCount) then
@@ -718,17 +722,17 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                     if isChunkedMessage then
                         match processMessageChunk rawMessage msgId with
                         | Some (chunkedPayload, msgIdWithChunk) ->
-                            handleSingleMessagePayload rawMessage msgIdWithChunk chunkedPayload hasWaitingChannel hasWaitingBatchChannel schemaDecodeFunction
+                            handleSingleMessagePayload rawMessage msgIdWithChunk chunkedPayload hasWaitingChannel hasWaitingBatchChannel isMessageUndecryptable schemaDecodeFunction
                         | None ->
                             rawMessage.Payload.Dispose()
                     else
                         let bytes = rawMessage.Payload.ToArray()
                         rawMessage.Payload.Dispose()
-                        handleSingleMessagePayload rawMessage msgId bytes hasWaitingChannel hasWaitingBatchChannel schemaDecodeFunction
+                        handleSingleMessagePayload rawMessage msgId bytes hasWaitingChannel hasWaitingBatchChannel isMessageUndecryptable schemaDecodeFunction
                 elif rawMessage.Metadata.NumMessages > 0 then
                     // handle batch message enqueuing; uncompressed payload has all messages in batch
                     match wrapException (fun () ->
-                        this.ReceiveIndividualMessagesFromBatch rawMessage schemaDecodeFunction) with
+                        this.ReceiveIndividualMessagesFromBatch rawMessage schemaDecodeFunction isMessageUndecryptable) with
                     | Ok () ->
                         // try respond to channel
                         if hasWaitingChannel && incomingMessages.Count > 0 then
@@ -754,18 +758,26 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
             if incomingMessages.Count > 0 then
                 replyWithMessage channel <| dequeueMessage()
             else
+                let mutable synchronouslyCanceled = false
                 let tokenRegistration =
                     if cancellationToken.CanBeCanceled then
-                        let rec cancellationTokenRegistration =
+                        let mutable cancellationTokenRegistration = None
+                        cancellationTokenRegistration <-
                             cancellationToken.Register((fun () ->
                                 Log.Logger.LogDebug("{0} receive cancelled", prefix)
-                                post this.Mb (CancelWaiter(cancellationTokenRegistration, channel))
+                                match cancellationTokenRegistration with
+                                | None -> synchronouslyCanceled <- true
+                                | Some _ ->  post this.Mb (CancelWaiter(cancellationTokenRegistration, channel))
                             ), false) |> Some
                         cancellationTokenRegistration
                     else
                         None
-                waiters.AddLast(struct(tokenRegistration, channel)) |> ignore
-                Log.Logger.LogDebug("{0} Receive waiting", prefix)
+                if synchronouslyCanceled then
+                    channel.SetCanceled()
+                    tokenRegistration |> Option.iter _.Dispose()
+                else
+                    waiters.AddLast(struct(tokenRegistration, channel)) |> ignore
+                    Log.Logger.LogDebug("{0} Receive waiting", prefix)
 
     let batchReceive (receiveCallbacks: ReceiveCallbacks<'T>) =
         Log.Logger.LogDebug("{0} BatchReceive", prefix)
@@ -778,23 +790,34 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                 replyWithBatch channel
             else
                 let batchCts = new CancellationTokenSource()
-                let registration =
+                let mutable synchronouslyCanceled = false
+                let tokenRegistration =
                     if cancellationToken.CanBeCanceled then
-                        let rec cancellationTokenRegistration =
+                        let mutable cancellationTokenRegistration = None
+                        cancellationTokenRegistration <-
                             cancellationToken.Register((fun () ->
                                 Log.Logger.LogDebug("{0} batch receive cancelled", prefix)
-                                post this.Mb (CancelBatchWaiter(batchCts, cancellationTokenRegistration, channel))
+                                match cancellationTokenRegistration with
+                                | None -> synchronouslyCanceled <- true
+                                | Some _ -> post this.Mb (CancelBatchWaiter(batchCts, cancellationTokenRegistration, channel))
                             ), false) |> Some
                         cancellationTokenRegistration
                     else
                         None
-                batchWaiters.AddLast(struct(batchCts, registration, channel)) |> ignore
-                asyncDelay
-                    consumerConfig.BatchReceivePolicy.Timeout
-                    (fun () ->
-                        if not batchCts.IsCancellationRequested then
-                            post this.Mb SendBatchByTimeout)
-                Log.Logger.LogDebug("{0} BatchReceive waiting", prefix)
+                if synchronouslyCanceled then
+                    channel.SetCanceled()
+                    tokenRegistration |> Option.iter _.Dispose()
+                    batchCts.Dispose()
+                else
+                    batchWaiters.AddLast(struct(batchCts, tokenRegistration, channel)) |> ignore
+                    asyncDelay
+                        consumerConfig.BatchReceivePolicy.Timeout
+                        (fun () ->
+                            if not batchCts.IsCancellationRequested then
+                                post this.Mb SendBatchByTimeout
+                            else
+                                batchCts.Dispose())
+                    Log.Logger.LogDebug("{0} BatchReceive waiting", prefix)
 
     let consumerOperations = {
         MessageReceived = fun rawMessage -> post this.Mb (MessageReceived rawMessage)
@@ -878,7 +901,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                             //    auto-topic-creation set to false
                             // No more retries are needed in this case.
                             connectionHandler.Failed()
-                            stopConsumer()
+                            closeConsumerTasks()
                             Log.Logger.LogWarning("{0} Closed consumer because topic does not exist anymore. {1}", prefix, ex.Message)
                             continueLoop <- false
                         | _ ->
@@ -1302,8 +1325,8 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
     do startStatTimer()
     do startChunkTimer()
 
-    abstract member ReceiveIndividualMessagesFromBatch: RawMessage -> (byte [] -> 'T) -> unit
-    default this.ReceiveIndividualMessagesFromBatch (rawMessage: RawMessage) schemaDecodeFunction =
+    abstract member ReceiveIndividualMessagesFromBatch: RawMessage -> (byte [] -> 'T) -> bool -> unit
+    default this.ReceiveIndividualMessagesFromBatch (rawMessage: RawMessage) schemaDecodeFunction isMessageUndecryptable =
         let batchSize = rawMessage.Metadata.NumMessages
         let acker = BatchMessageAcker(batchSize)
         let mutable skippedMessages = 0
@@ -1329,7 +1352,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                     rawMessage.MessageId with
                         Partition = partitionIndex
                         Type = Batch(%i, acker)
-                        TopicName = %""
+                        TopicName = topicName.CompleteTopicName
                 }
                 let msgKey = singleMessageMetadata.PartitionKey
                 let getValue () =
@@ -1357,7 +1380,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                     %msgKey,
                     singleMessageMetadata.PartitionKeyB64Encoded,
                     properties,
-                    EncryptionContext.FromMetadata rawMessage.Metadata,
+                    EncryptionContext.FromMetadata(rawMessage.Metadata, isEncrypted = isMessageUndecryptable),
                     getSchemaVersionBytes rawMessage.Metadata.SchemaVersion,
                     %(int64 singleMessageMetadata.SequenceId),
                     singleMessageMetadata.OrderingKey,
@@ -1365,6 +1388,7 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
                     eventTime,
                     rawMessage.RedeliveryCount,
                     rawMessage.Metadata.ReplicatedFrom,
+                    rawMessage.Metadata.ProducerName,
                     getValue
                 )
                 if (rawMessage.RedeliveryCount >= deadLettersProcessor.MaxRedeliveryCount) then
@@ -1671,7 +1695,9 @@ type internal ConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clien
             | Closing | Closed ->
                 ValueTask()
             | _ ->
-                postAndAsyncReply mb ConsumerMessage.Close |> ValueTask
+                backgroundTask {
+                    do! postAndAsyncReply mb ConsumerMessage.Close
+                } |> ValueTask
 
 
 and internal ZeroQueueConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T>, clientConfig: PulsarClientConfiguration,
@@ -1695,7 +1721,7 @@ and internal ZeroQueueConsumerImpl<'T> (consumerConfig: ConsumerConfiguration<'T
         if this.Waiters.Count > 0 then
             this.SendFlowPermits this.Waiters.Count
 
-    override this.ReceiveIndividualMessagesFromBatch (_: RawMessage) _ =
+    override this.ReceiveIndividualMessagesFromBatch (_: RawMessage) _ _ =
         Log.Logger.LogError("{0} Closing consumer due to unsupported received batch-message with zero receiver queue size", prefix)
         let _ = postAndAsyncReply this.Mb ConsumerMessage.Close
         let exn =
